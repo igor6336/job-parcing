@@ -1,0 +1,84 @@
+name: Daily job digest
+
+on:
+  schedule:
+    # 04:45 UTC = 07:45 МСК. Планировщик GitHub Actions регулярно опаздывает
+    # на 5–20 минут при высокой нагрузке, поэтому запуск ставится заранее,
+    # чтобы сообщение приходило около 08:00 по Москве.
+    - cron: "45 4 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Только показать результат, без отправки в Telegram"
+        type: boolean
+        default: false
+      no_dedup:
+        description: "Игнорировать историю отправок"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-job-digest
+  cancel-in-progress: false
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run parser
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SUPERJOB_API_KEY: ${{ secrets.SUPERJOB_API_KEY }}
+          # Нужен, чтобы работал hh.ru: API блокирует IP зарубежных дата-центров,
+          # включая раннеры GitHub Actions. Без секрета переменная пустая
+          # и запросы идут напрямую — остальные источники работают как есть.
+          JOBPARSER_PROXY: ${{ secrets.JOBPARSER_PROXY }}
+        run: |
+          python -m jobparser.main \
+            --out digest.md \
+            ${{ (inputs.dry_run && '--dry-run') || '' }} \
+            ${{ (inputs.no_dedup && '--no-dedup') || '' }}
+
+      - name: Upload digest artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest
+          path: digest.md
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Commit dedup state
+        if: success() && !inputs.dry_run
+        run: |
+          if [ -z "$(git status --porcelain state/)" ]; then
+            echo "Состояние не изменилось"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/
+          git commit -m "chore: update sent-vacancies state [skip ci]"
+          for attempt in 1 2 3 4; do
+            if git push; then exit 0; fi
+            echo "push failed, retry $attempt"
+            git pull --rebase
+            sleep $((2 ** attempt))
+          done
+          exit 1
