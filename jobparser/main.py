@@ -60,10 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     raw = collect(config, secrets, session)
     log.info("всего собрано: %d", len(raw))
     if not raw:
-        log.error(
-            "ни один источник не вернул данных — проверьте сеть и доступность API "
-            "(площадки могут блокировать IP зарубежных дата-центров)"
-        )
+        log.error("ни один источник не вернул данных — проверьте сеть и логи выше")
 
     relevant = apply_filters(raw, config.search)
     log.info("после фильтрации: %d", len(relevant))

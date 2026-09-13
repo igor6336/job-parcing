@@ -26,8 +26,7 @@ def make_session(timeout: int = 20) -> requests.Session:
     """Сессия с экспоненциальными ретраями на сетевые ошибки и 5xx/429.
 
     JOBPARSER_PROXY (например, http://user:pass@host:port) направляет запросы
-    через прокси. Это нужно для hh.ru: площадка отдаёт 403 на IP зарубежных
-    дата-центров, включая раннеры GitHub Actions. Подробности в README.
+    через прокси — на случай, если площадки недоступны из текущей сети.
     """
     session = requests.Session()
 

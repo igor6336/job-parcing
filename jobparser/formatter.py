@@ -24,9 +24,13 @@ def format_vacancy(vacancy: Vacancy, index: int) -> str:
     lines = [
         f"<b>{index}. {escape(vacancy.title)}</b>",
         _line("🏢", vacancy.company or "—"),
+        # Зарплату показываем всегда: «не указана» — это тоже информация.
         _line("💰", vacancy.salary or "не указана"),
-        _line("🗓", schedule or "не указан"),
-        _line("📋", truncate(vacancy.requirements, 230) if vacancy.requirements else "—"),
+        # График и требования опускаем, если источник их не отдал: у RSS-фида
+        # hh этих полей нет в принципе, и строки-заглушки делали бы вид,
+        # будто данные потерялись.
+        _line("🗓", schedule),
+        _line("📋", truncate(vacancy.requirements, 230) if vacancy.requirements else None),
         f'🔗 <a href="{escape(vacancy.url, quote=True)}">Откликнуться</a> · <i>{escape(vacancy.source)}</i>',
     ]
     return "\n".join(line for line in lines if line)

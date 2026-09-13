@@ -6,6 +6,7 @@ from .base import BaseSource
 from .getmatch import GetmatchSource
 from .habr import HabrSource
 from .hh import HHSource
+from .linkedin import LinkedInSource
 from .superjob import SuperJobSource
 from .trudvsem import TrudvsemSource
 
@@ -15,6 +16,7 @@ SOURCES: dict[str, type[BaseSource]] = {
     "trudvsem": TrudvsemSource,
     "habr": HabrSource,
     "getmatch": GetmatchSource,
+    "linkedin": LinkedInSource,
     "superjob": SuperJobSource,
 }
 

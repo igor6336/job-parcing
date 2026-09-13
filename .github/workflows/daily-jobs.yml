@@ -45,9 +45,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SUPERJOB_API_KEY: ${{ secrets.SUPERJOB_API_KEY }}
-          # Нужен, чтобы работал hh.ru: API блокирует IP зарубежных дата-центров,
-          # включая раннеры GitHub Actions. Без секрета переменная пустая
-          # и запросы идут напрямую — остальные источники работают как есть.
+          # Необязательный прокси на случай, если площадки недоступны из сети
+          # раннера. Для hh.ru не нужен: его API закрыт не по географии,
+          # а для всех неавторизованных клиентов — парсер ходит через RSS.
           JOBPARSER_PROXY: ${{ secrets.JOBPARSER_PROXY }}
         run: |
           python -m jobparser.main \

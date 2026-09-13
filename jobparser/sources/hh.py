@@ -1,21 +1,44 @@
-"""hh.ru — официальный публичный API, ключ не нужен.
+"""hh.ru — через RSS-выдачу поиска.
 
-Документация: https://api.hh.ru/openapi/redoc
-Самый полный источник по российскому рынку, поэтому он же — основной.
+Почему не API: в апреле 2026 hh закрыл публичный `GET /vacancies` — метод
+отдаёт 403 всем неавторизованным клиентам, откуда бы запрос ни шёл. Ключи
+выдаются работодателям после модерации, соискателю его не получить.
+Справочники (/areas, /dictionaries, /suggests) остались открытыми, но вакансий
+там нет.
+
+RSS (`hh.ru/search/vacancy/rss`) — штатная функция самого сайта: ссылка на неё
+есть на странице поиска. Это не обход блокировки и не парсинг HTML, который
+правила hh запрещают отдельным пунктом.
+
+Цена решения: фид отдаёт только компанию, регион, зарплату и дату — графика
+работы и требований в нём нет, они остаются за ссылкой.
 """
 
 from __future__ import annotations
 
+import html
 import logging
+import re
 from datetime import datetime
+from xml.etree import ElementTree
 
 from ..models import Vacancy
-from ..utils import clean_html, format_salary, get_json
+from ..utils import get_text
 from .base import BaseSource
 
 log = logging.getLogger(__name__)
 
-API_URL = "https://api.hh.ru/vacancies"
+RSS_URL = "https://hh.ru/search/vacancy/rss"
+
+# Описание в фиде — четыре фиксированных абзаца.
+COMPANY_RE = re.compile(r"Вакансия компании:\s*(.+?)\s*</p>", re.S)
+REGION_RE = re.compile(r"Регион:\s*(.+?)\s*</p>", re.S)
+SALARY_RE = re.compile(r"уровень месячного дохода:\s*(.+?)\s*</p>", re.S)
+
+
+def _unescape(text: str) -> str:
+    """В заголовках фида встречается двойное экранирование: «&amp;mdash;»."""
+    return html.unescape(html.unescape(text or "")).strip()
 
 
 class HHSource(BaseSource):
@@ -23,80 +46,111 @@ class HHSource(BaseSource):
 
     def fetch(self) -> list[Vacancy]:
         vacancies: list[Vacancy] = []
-        period = int(self.search_cfg.get("period_days", 3))
-        experience = self.cfg.get("experience") or []
-        per_page = int(self.cfg.get("per_page", 100))
         max_pages = int(self.cfg.get("max_pages", 3))
+        area = self.cfg.get("area", 1)
+        # search_field=name резко чистит выдачу: RSS игнорирует часть фильтров,
+        # и без него в фид попадает всё, где ключевое слово встретилось в тексте.
+        search_field = self.cfg.get("search_field", "name")
+        period = int(self.search_cfg.get("period_days", 3))
 
-        requests_made = 0
+        seen_ids: set[str] = set()
         for query in self.cfg.get("queries", []):
             for page in range(max_pages):
-                requests_made += 1
                 params = {
                     "text": query,
-                    "area": self.cfg.get("area", 1),
-                    "per_page": per_page,
+                    "area": area,
                     "page": page,
                     "period": period,
                     "order_by": "publication_time",
                 }
-                if experience:
-                    params["experience"] = experience
+                if search_field:
+                    params["search_field"] = search_field
+                if self.cfg.get("experience"):
+                    params["experience"] = self.cfg["experience"]
 
-                data = get_json(self.session, API_URL, params=params)
-                if not isinstance(data, dict):
+                body = get_text(self.session, RSS_URL, params=params)
+                if not body:
                     break
 
-                items = data.get("items") or []
-                for item in items:
-                    parsed = self._parse(item, bool(experience))
-                    if parsed:
-                        vacancies.append(parsed)
-
-                if page + 1 >= int(data.get("pages", 0)):
+                items = self._parse_feed(body)
+                if not items:
                     break
 
-        if requests_made and not vacancies:
-            log.error(
-                "hh.ru не вернул ни одной вакансии. Самая частая причина — HTTP 403: "
-                "API блокирует IP зарубежных дата-центров, включая раннеры GitHub "
-                "Actions. Задайте JOBPARSER_PROXY с российским адресом или запускайте "
-                "парсер на VPS в РФ (см. README, раздел «Ограничение hh.ru»)."
+                new_on_page = 0
+                for vacancy in items:
+                    if vacancy.external_id in seen_ids:
+                        continue
+                    seen_ids.add(vacancy.external_id)
+                    new_on_page += 1
+                    vacancies.append(vacancy)
+
+                # Фид отдаёт ровно 20 записей; когда страницы кончились,
+                # hh повторяет последнюю вместо пустого ответа.
+                if new_on_page == 0:
+                    break
+
+        if not vacancies:
+            log.warning(
+                "hh.ru: RSS не вернул вакансий. Если в логе выше есть HTTP 403 — "
+                "проверьте, не закрыли ли и RSS (см. README, раздел «hh.ru»)."
             )
-
         return vacancies
 
-    def _parse(self, item: dict, level_prefiltered: bool) -> Vacancy | None:
+    def _parse_feed(self, body: str) -> list[Vacancy]:
         try:
-            salary = item.get("salary") or {}
-            snippet = item.get("snippet") or {}
-            requirement = clean_html(snippet.get("requirement"))
-            responsibility = clean_html(snippet.get("responsibility"))
+            root = ElementTree.fromstring(body)
+        except ElementTree.ParseError as exc:
+            log.warning("hh.ru: не разобрался RSS (%s)", exc)
+            return []
 
-            published_at = None
-            if item.get("published_at"):
-                published_at = datetime.fromisoformat(item["published_at"])
+        result: list[Vacancy] = []
+        for item in root.iterfind(".//item"):
+            vacancy = self._parse_item(item)
+            if vacancy:
+                result.append(vacancy)
+        return result
 
-            return Vacancy(
-                source=self.name,
-                external_id=str(item["id"]),
-                title=item.get("name", "").strip(),
-                company=(item.get("employer") or {}).get("name", "").strip(),
-                url=item.get("alternate_url", ""),
-                salary=format_salary(
-                    salary.get("from"),
-                    salary.get("to"),
-                    salary.get("currency"),
-                    salary.get("gross"),
-                ),
-                schedule=(item.get("schedule") or {}).get("name"),
-                employment=(item.get("employment") or {}).get("name"),
-                requirements=requirement or responsibility or None,
-                area=(item.get("area") or {}).get("name"),
-                published_at=published_at,
-                raw_text=" ".join(filter(None, [requirement, responsibility])),
-                level_prefiltered=level_prefiltered,
-            )
-        except Exception as exc:  # noqa: BLE001
-            log.debug("hh: пропущена вакансия %s: %s", item.get("id"), exc)
+    def _parse_item(self, item) -> Vacancy | None:
+        link = (item.findtext("link") or "").strip()
+        title = _unescape(item.findtext("title") or "")
+        if not link or not title:
             return None
+
+        match = re.search(r"/vacancy/(\d+)", link)
+        external_id = match.group(1) if match else link
+
+        description = item.findtext("description") or ""
+        company = self._extract(COMPANY_RE, description) or "—"
+        region = self._extract(REGION_RE, description)
+        salary = self._extract(SALARY_RE, description)
+        if salary and "не указан" in salary.lower():
+            salary = None
+
+        published_at = None
+        raw_date = (item.findtext("pubDate") or "").strip()
+        if raw_date:
+            try:
+                published_at = datetime.fromisoformat(raw_date)
+            except ValueError:
+                published_at = None
+
+        return Vacancy(
+            source=self.name,
+            external_id=str(external_id),
+            title=title,
+            company=company,
+            url=link,
+            salary=salary,
+            # Графика и требований в фиде нет — они видны только на странице вакансии.
+            schedule=None,
+            employment=None,
+            requirements=None,
+            area=region,
+            published_at=published_at,
+            raw_text=title,
+        )
+
+    @staticmethod
+    def _extract(pattern: re.Pattern, text: str) -> str | None:
+        match = pattern.search(text)
+        return _unescape(match.group(1)) if match else None
