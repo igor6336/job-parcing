@@ -100,9 +100,55 @@ def test_numeric_experience_rejected():
 
 def test_word_boundary_prefix_match():
     # «аналитик» должен ловить падежи, но не срабатывать внутри чужого слова.
-    ok, _, _ = is_relevant(make("Стажер отдела аналитики"), SEARCH)
-    assert ok
-    ok, _, _ = is_relevant(make("Junior специалист по комбинаторике"), SEARCH)
+    from jobparser.filters import _best_match, normalize
+
+    role, weight = _best_match(normalize("Стажер отдела аналитики"), SEARCH["role_keywords"])
+    assert role and weight > 0
+
+    _, _, reason = is_relevant(make("Junior специалист по комбинаторике"), SEARCH)
+    assert "не найдена целевая роль" in reason
+
+
+def test_profile_role_outranks_adjacent_one():
+    # Бизнес-анализ — ядро резюме, системный анализ — смежная область.
+    _, core, _ = is_relevant(make("Junior бизнес-аналитик"), SEARCH)
+    _, adjacent, _ = is_relevant(make("Junior системный аналитик"), SEARCH)
+    assert core > adjacent
+
+
+def test_matching_skills_raise_score():
+    without = is_relevant(make("Junior бизнес-аналитик"), SEARCH)[1]
+    with_skills = is_relevant(
+        make("Junior бизнес-аналитик", text="BPMN, MS Visio, Power Query, дашборды"), SEARCH
+    )[1]
+    assert with_skills > without
+
+
+def test_missing_stack_pushes_vacancy_below_threshold():
+    # 1С в резюме нет: такие вакансии должны уходить из дайджеста.
+    ok, _, reason = is_relevant(
+        make("Стажер-аналитик 1С:Бухгалтерия", text="1С:ЗУП, конфигурирование"), SEARCH
+    )
+    assert not ok and "низкий балл" in reason
+
+
+def test_part_time_schedule_scores_higher():
+    full = make("Junior бизнес-аналитик", company="A")
+    full.schedule = "Полный день"
+    part = make("Junior бизнес-аналитик", company="B")
+    part.schedule = "Неполный рабочий день"
+    assert is_relevant(part, SEARCH)[1] > is_relevant(full, SEARCH)[1]
+
+
+def test_advanced_english_requirement_rejected():
+    ok, _, reason = is_relevant(
+        make("Junior бизнес-аналитик", text="Требуется fluent English"), SEARCH
+    )
+    assert not ok and "не по профилю" in reason
+
+
+def test_hr_analytics_rejected():
+    ok, _, _ = is_relevant(make("Стажер по кадровому делопроизводству (HR-аналитика)"), SEARCH)
     assert not ok
 
 

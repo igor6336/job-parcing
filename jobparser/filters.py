@@ -27,15 +27,48 @@ def normalize(text: str | None) -> str:
     return " " + re.sub(r"\s+", " ", text).strip() + " "
 
 
-def _matches(haystack: str, keywords: list[str]) -> str | None:
+def _matches(haystack: str, keywords) -> str | None:
     """Совпадение по началу слова: «аналитик» ловит «аналитика/аналитику»,
     но «bi» не срабатывает внутри «combi». Хвост слова свободен намеренно —
-    иначе русские падежи пришлось бы перечислять руками."""
+    иначе русские падежи пришлось бы перечислять руками.
+
+    Принимает и список, и словарь «ключ: вес» — тогда перебираются ключи.
+    """
     for keyword in keywords or []:
         needle = normalize(keyword).rstrip()  # оставляем ведущий пробел
         if needle.strip() and needle in haystack:
             return keyword
     return None
+
+
+def _best_match(haystack: str, weighted: dict) -> tuple[str | None, int]:
+    """Лучшее совпадение по весу.
+
+    «Младший бизнес-аналитик» матчит и широкий якорь «аналитик», и точную
+    «бизнес аналитик» — засчитываем вторую, иначе профильная вакансия
+    получила бы тот же балл, что и случайная.
+    """
+    best_key, best_weight = None, 0
+    for keyword, weight in (weighted or {}).items():
+        needle = normalize(keyword).rstrip()
+        if needle.strip() and needle in haystack and weight > best_weight:
+            best_key, best_weight = keyword, weight
+    return best_key, best_weight
+
+
+def _sum_weights(haystack: str, weighted: dict, cap: int | None = None) -> tuple[int, list[str]]:
+    """Сумма весов всех совпавших ключей (с потолком, чтобы длинное
+    описание не перевешивало всё остальное)."""
+    total = 0
+    hits: list[str] = []
+    for keyword, weight in (weighted or {}).items():
+        needle = normalize(keyword).rstrip()
+        if needle.strip() and needle in haystack:
+            total += int(weight)
+            hits.append(keyword)
+    if cap is not None:
+        total = max(-cap, min(cap, total))
+    return total, hits
 
 
 def is_relevant(vacancy: Vacancy, search_cfg: dict) -> tuple[bool, int, str]:
@@ -60,13 +93,18 @@ def is_relevant(vacancy: Vacancy, search_cfg: dict) -> tuple[bool, int, str]:
         if not _matches(area, search_cfg.get("city_aliases", [])):
             return False, 0, f"другой регион: {vacancy.area}"
 
-    role_keywords = search_cfg.get("role_keywords", [])
+    req_stop = _matches(body, search_cfg.get("requirement_stopwords", []))
+    if req_stop:
+        return False, 0, f"требование не по профилю: {req_stop}"
+
+    role_keywords = search_cfg.get("role_keywords", {})
     level_keywords = search_cfg.get("level_keywords", [])
 
     # Роль обязана быть именно в названии. Поиск по всему описанию даёт
     # мусор вроде «Стажёр по работе с клиентами», где слово «аналитика»
     # встречается один раз в списке обязанностей.
-    if not _matches(title, role_keywords):
+    role, role_weight = _best_match(title, role_keywords)
+    if not role:
         return False, 0, "не найдена целевая роль в названии"
 
     level_in_title = _matches(title, level_keywords)
@@ -75,7 +113,7 @@ def is_relevant(vacancy: Vacancy, search_cfg: dict) -> tuple[bool, int, str]:
     if not level_in_body and not vacancy.level_prefiltered:
         return False, 0, "нет признаков стажировки/junior"
 
-    score = 4
+    score = role_weight
     if level_in_title:
         score += 4
     elif level_in_body:
@@ -83,11 +121,27 @@ def is_relevant(vacancy: Vacancy, search_cfg: dict) -> tuple[bool, int, str]:
     else:
         score += 1  # уровень гарантирован только фильтром источника
 
+    # Совпадения со стеком из резюме поднимают вакансию, чужой стек — опускает.
+    # Потолок не даёт длинному описанию перевесить роль и уровень.
+    skill_bonus, _ = _sum_weights(body, search_cfg.get("skill_keywords", {}), cap=6)
+    gap_penalty, _ = _sum_weights(body, search_cfg.get("skill_gaps", {}), cap=6)
+    score += skill_bonus + gap_penalty
+
+    # График, совместимый с учёбой. Отсечения нет намеренно: RSS-фид hh
+    # график не отдаёт вообще, и жёсткий фильтр вырезал бы главный источник.
+    schedule_text = normalize(" ".join(filter(None, [vacancy.schedule, vacancy.employment])))
+    schedule_bonus, _ = _sum_weights(schedule_text, search_cfg.get("schedule_bonus", {}), cap=5)
+    score += schedule_bonus
+
     if vacancy.salary:
         score += 1
     if vacancy.requirements:
         score += 1
     score += _freshness_bonus(vacancy.published_at)
+
+    min_score = int(search_cfg.get("min_score", 0))
+    if score < min_score:
+        return False, score, f"низкий балл соответствия: {score} < {min_score}"
 
     return True, score, ""
 
