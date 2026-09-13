@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,19 @@ class Secrets:
             telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID") or None,
             superjob_key=os.getenv("SUPERJOB_API_KEY") or None,
         )
+
+    @property
+    def telegram_chat_ids(self) -> list[str]:
+        """Получателей может быть несколько: TELEGRAM_CHAT_ID принимает
+        список через запятую, пробел или точку с запятой.
+
+        Каждый получатель должен сам написать боту хотя бы раз — иначе
+        Telegram запрещает отправку и возвращает «chat not found».
+        """
+        raw = self.telegram_chat_id or ""
+        ids = [part.strip() for part in re.split(r"[,;\s]+", raw) if part.strip()]
+        # Один и тот же чат в списке дважды означал бы дубль сообщения.
+        return list(dict.fromkeys(ids))
 
 
 class Config:

@@ -93,18 +93,21 @@ def main(argv: list[str] | None = None) -> int:
         print("\n\n".join(messages))
         return 0
 
-    if not (secrets.telegram_token and secrets.telegram_chat_id):
+    chat_ids = secrets.telegram_chat_ids
+    if not (secrets.telegram_token and chat_ids):
         log.error("не заданы TELEGRAM_BOT_TOKEN и/или TELEGRAM_CHAT_ID")
         return 2
 
     try:
-        send_messages(session, secrets.telegram_token, secrets.telegram_chat_id, messages)
+        send_messages(session, secrets.telegram_token, chat_ids, messages)
     except TelegramError as exc:
         log.error("отправка не удалась: %s", exc)
         return 3
 
     # Состояние обновляем только после успешной доставки, иначе вакансии
     # потеряются: они будут помечены отправленными, но пользователь их не увидит.
+    # Достаточно одного дошедшего получателя — иначе чат, который «отвалился»,
+    # заставлял бы остальных получать один и тот же дайджест каждый день.
     if fresh:
         store.mark_sent(fresh)
         removed = store.prune()
