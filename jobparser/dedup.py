@@ -15,6 +15,11 @@ from .models import Vacancy
 
 log = logging.getLogger(__name__)
 
+# Служебная запись: дата последнего успешно отправленного дайджеста.
+# Нужна резервным запускам, чтобы не слать второе «новых вакансий нет»
+# в тот же день, когда основной запуск уже отработал.
+DIGEST_MARKER = "__last_digest__"
+
 
 class SeenStore:
     def __init__(self, path: str | Path, ttl_days: int = 60):
@@ -44,6 +49,12 @@ class SeenStore:
             self._data[vacancy.key] = today
             self._data[vacancy.fuzzy_key] = today
 
+    def sent_today(self) -> bool:
+        return self._data.get(DIGEST_MARKER) == date.today().isoformat()
+
+    def mark_digest_sent(self) -> None:
+        self._data[DIGEST_MARKER] = date.today().isoformat()
+
     def prune(self) -> int:
         """Удаляет записи старше ttl_days. Возвращает число удалённых."""
         cutoff = date.today() - timedelta(days=self.ttl_days)
@@ -65,4 +76,5 @@ class SeenStore:
         self.path.write_text(payload + "\n", encoding="utf-8")
 
     def __len__(self) -> int:
-        return len(self._data)
+        # Служебная запись — не вакансия, в счётчике истории ей не место.
+        return len([key for key in self._data if key != DIGEST_MARKER])

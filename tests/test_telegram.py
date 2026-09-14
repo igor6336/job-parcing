@@ -63,3 +63,19 @@ def test_all_recipients_broken_raises():
 def test_plain_string_still_works():
     session = FakeSession()
     assert send_messages(session, "token", "111", ["дайджест"]) == ["111"]
+
+
+def test_backup_run_stays_silent_after_digest_sent(tmp_path):
+    """Резервный запуск не должен слать второе «новых нет» за день."""
+    from jobparser.dedup import SeenStore
+
+    store = SeenStore(tmp_path / "seen.json")
+    assert not store.sent_today()
+
+    store.mark_digest_sent()
+    store.save()
+
+    reloaded = SeenStore(tmp_path / "seen.json")
+    assert reloaded.sent_today()
+    # Служебная запись не должна попадать в счётчик истории вакансий.
+    assert len(reloaded) == 0

@@ -79,6 +79,13 @@ def main(argv: list[str] | None = None) -> int:
     messages = build_messages(fresh, header)
 
     if not fresh:
+        # Расписание GitHub Actions ненадёжно и пропускает запуски, поэтому
+        # workflow дублирует их резервными. Если дайджест сегодня уже ушёл,
+        # резервный запуск молчит, иначе за день приходило бы несколько
+        # сообщений «новых вакансий нет».
+        if store.sent_today():
+            log.info("дайджест сегодня уже отправлен — резервный запуск молчит")
+            return 0
         if config.telegram.get("notify_when_empty", True):
             messages = [config.telegram.get("empty_message", "Новых вакансий нет.")]
         else:
@@ -110,9 +117,10 @@ def main(argv: list[str] | None = None) -> int:
     # заставлял бы остальных получать один и тот же дайджест каждый день.
     if fresh:
         store.mark_sent(fresh)
-        removed = store.prune()
-        store.save()
-        log.info("состояние сохранено (удалено устаревших записей: %d)", removed)
+    store.mark_digest_sent()
+    removed = store.prune()
+    store.save()
+    log.info("состояние сохранено (удалено устаревших записей: %d)", removed)
 
     return 0
 
