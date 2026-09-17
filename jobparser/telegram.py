@@ -30,8 +30,18 @@ def _send_one(session: requests.Session, url: str, chat_id: str, text: str) -> N
 
     if response.status_code != 200:
         # Тело ответа Telegram содержит описание ошибки, но не токен.
+        hint = ""
+        if response.status_code == 404:
+            # 404 приходит на несуществующий токен, а не на плохой chat_id:
+            # у неверного чата ошибка была бы 400 «chat not found».
+            hint = (
+                " — похоже, неверный TELEGRAM_BOT_TOKEN: проверьте секрет"
+                " (частая причина — обрезанное значение, пробел или перевод строки)"
+            )
+        elif response.status_code == 403:
+            hint = " — получатель заблокировал бота или ни разу ему не писал"
         raise TelegramError(
-            f"Telegram вернул HTTP {response.status_code}: {response.text[:300]}"
+            f"Telegram вернул HTTP {response.status_code}: {response.text[:300]}{hint}"
         )
 
 
@@ -54,6 +64,7 @@ def send_messages(
     url = API_URL.format(token=token)
     delivered: list[str] = []
     failures: list[str] = []
+    last_error: str = ""
 
     for chat_id in chat_ids:
         try:
@@ -64,6 +75,7 @@ def send_messages(
             delivered.append(chat_id)
         except TelegramError as exc:
             failures.append(chat_id)
+            last_error = str(exc)
             log.error("чат %s: доставка не удалась — %s", chat_id, exc)
 
     log.info(
@@ -73,5 +85,9 @@ def send_messages(
         len(messages),
     )
     if failures and not delivered:
-        raise TelegramError(f"ни один получатель не получил дайджест: {failures}")
+        # Причину выносим в само исключение: оно попадает в лог workflow
+        # последней строкой, и по ней должно быть понятно, что чинить.
+        raise TelegramError(
+            f"ни один получатель не получил дайджест: {failures}. {last_error}"
+        )
     return delivered

@@ -79,3 +79,14 @@ def test_backup_run_stays_silent_after_digest_sent(tmp_path):
     assert reloaded.sent_today()
     # Служебная запись не должна попадать в счётчик истории вакансий.
     assert len(reloaded) == 0
+
+
+def test_404_points_at_the_token_not_the_chat():
+    """404 приходит на битый токен; подсказка должна называть именно его."""
+    session = FakeSession()
+    session.post = lambda url, json=None, timeout=None: FakeResponse(
+        404, '{"ok":false,"error_code":404,"description":"Not Found"}'
+    )
+    with pytest.raises(TelegramError) as exc:
+        send_messages(session, "битый-токен", ["111"], ["дайджест"])
+    assert "TELEGRAM_BOT_TOKEN" in str(exc.value)
