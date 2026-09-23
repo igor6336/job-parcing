@@ -53,41 +53,58 @@ class HHSource(BaseSource):
         search_field = self.cfg.get("search_field", "name")
         period = int(self.search_cfg.get("period_days", 3))
 
+        # Режимы поиска. Фид уважает employment и schedule (в отличие от
+        # experience, который он игнорирует), поэтому стажировки и гибкий
+        # график можно запросить напрямую, а не вылавливать по названию.
+        # bonus — прибавка к баллу: площадка подтвердила тип занятости,
+        # даже если в заголовке слова «стажировка» нет.
+        profiles = self.cfg.get("query_profiles") or [{"params": {}, "bonus": 0}]
+
         seen_ids: set[str] = set()
-        for query in self.cfg.get("queries", []):
-            for page in range(max_pages):
-                params = {
-                    "text": query,
-                    "area": area,
-                    "page": page,
-                    "period": period,
-                    "order_by": "publication_time",
-                }
-                if search_field:
-                    params["search_field"] = search_field
-                if self.cfg.get("experience"):
-                    params["experience"] = self.cfg["experience"]
+        for profile in profiles:
+            extra = profile.get("params") or {}
+            bonus = int(profile.get("bonus", 0))
+            note = profile.get("note", "")
 
-                body = get_text(self.session, RSS_URL, params=params)
-                if not body:
-                    break
+            for query in self.cfg.get("queries", []):
+                for page in range(max_pages):
+                    params = {
+                        "text": query,
+                        "area": area,
+                        "page": page,
+                        "period": period,
+                        "order_by": "publication_time",
+                    }
+                    if search_field:
+                        params["search_field"] = search_field
+                    params.update(extra)
 
-                items = self._parse_feed(body)
-                if not items:
-                    break
+                    body = get_text(self.session, RSS_URL, params=params)
+                    if not body:
+                        break
 
-                new_on_page = 0
-                for vacancy in items:
-                    if vacancy.external_id in seen_ids:
-                        continue
-                    seen_ids.add(vacancy.external_id)
-                    new_on_page += 1
-                    vacancies.append(vacancy)
+                    items = self._parse_feed(body)
+                    if not items:
+                        break
 
-                # Фид отдаёт ровно 20 записей; когда страницы кончились,
-                # hh повторяет последнюю вместо пустого ответа.
-                if new_on_page == 0:
-                    break
+                    new_on_page = 0
+                    for vacancy in items:
+                        if vacancy.external_id in seen_ids:
+                            continue
+                        seen_ids.add(vacancy.external_id)
+                        new_on_page += 1
+                        vacancy.source_bonus = bonus
+                        vacancy.source_note = note
+                        if bonus > 0:
+                            # Режим уже гарантирует нужный тип занятости,
+                            # поэтому слово «стажёр» в тексте не обязательно.
+                            vacancy.level_prefiltered = True
+                        vacancies.append(vacancy)
+
+                    # Фид отдаёт ровно 20 записей; когда страницы кончились,
+                    # hh повторяет последнюю вместо пустого ответа.
+                    if new_on_page == 0:
+                        break
 
         if not vacancies:
             log.warning(

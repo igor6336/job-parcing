@@ -85,8 +85,13 @@ def test_linkedin_card_parsing():
 
 
 def test_linkedin_moscow_agglomeration_passes_city_filter():
+    """«Агломерация Москвы» — это Москва, регион отбрасывать вакансию не должен.
+
+    Проверяем именно причину отказа: по баллам junior на полный день
+    отсеивается отдельным правилом, и это здесь ни при чём.
+    """
     from jobparser.filters import is_relevant
 
     vacancy = make_source(LinkedInSource)._parse(LINKEDIN_HTML)[0]
-    ok, _, reason = is_relevant(vacancy, SEARCH)
-    assert ok, reason
+    _, _, reason = is_relevant(vacancy, SEARCH)
+    assert "регион" not in reason

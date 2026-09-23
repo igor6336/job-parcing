@@ -12,7 +12,9 @@ from datetime import datetime, timedelta, timezone
 
 from .models import Vacancy
 
-_NON_WORD = re.compile(r"[^a-zа-я0-9+]+")
+# «#» и «+» сохраняются: иначе ключи «c#» и «c++» схлопнулись бы в «c»
+# и совпадали бы с любым словом на эту букву.
+_NON_WORD = re.compile(r"[^a-zа-я0-9+#]+")
 
 
 def normalize(text: str | None) -> str:
@@ -27,16 +29,30 @@ def normalize(text: str | None) -> str:
     return " " + re.sub(r"\s+", " ", text).strip() + " "
 
 
+def _contains(haystack: str, keyword: str) -> bool:
+    """Совпадение по началу слова: «аналитик» ловит «аналитика/аналитику».
+    Хвост слова свободен намеренно — иначе русские падежи пришлось бы
+    перечислять руками.
+
+    Исключение — очень короткие ключи («qa», «hr», «1с»): у них требуется
+    совпадение целым словом. Иначе двухбуквенный ключ цеплялся бы к любому
+    слову с таким началом, а это ложные срабатывания на ровном месте.
+    """
+    needle = normalize(keyword).strip()
+    if not needle:
+        return False
+    if len(needle) <= 2:
+        return f" {needle} " in haystack
+    return f" {needle}" in haystack
+
+
 def _matches(haystack: str, keywords) -> str | None:
-    """Совпадение по началу слова: «аналитик» ловит «аналитика/аналитику»,
-    но «bi» не срабатывает внутри «combi». Хвост слова свободен намеренно —
-    иначе русские падежи пришлось бы перечислять руками.
+    """Первый совпавший ключ.
 
     Принимает и список, и словарь «ключ: вес» — тогда перебираются ключи.
     """
     for keyword in keywords or []:
-        needle = normalize(keyword).rstrip()  # оставляем ведущий пробел
-        if needle.strip() and needle in haystack:
+        if _contains(haystack, keyword):
             return keyword
     return None
 
@@ -50,8 +66,7 @@ def _best_match(haystack: str, weighted: dict) -> tuple[str | None, int]:
     """
     best_key, best_weight = None, 0
     for keyword, weight in (weighted or {}).items():
-        needle = normalize(keyword).rstrip()
-        if needle.strip() and needle in haystack and weight > best_weight:
+        if weight > best_weight and _contains(haystack, keyword):
             best_key, best_weight = keyword, weight
     return best_key, best_weight
 
@@ -62,8 +77,7 @@ def _sum_weights(haystack: str, weighted: dict, cap: int | None = None) -> tuple
     total = 0
     hits: list[str] = []
     for keyword, weight in (weighted or {}).items():
-        needle = normalize(keyword).rstrip()
-        if needle.strip() and needle in haystack:
+        if _contains(haystack, keyword):
             total += int(weight)
             hits.append(keyword)
     if cap is not None:
@@ -98,7 +112,6 @@ def is_relevant(vacancy: Vacancy, search_cfg: dict) -> tuple[bool, int, str]:
         return False, 0, f"требование не по профилю: {req_stop}"
 
     role_keywords = search_cfg.get("role_keywords", {})
-    level_keywords = search_cfg.get("level_keywords", [])
 
     # Роль обязана быть именно в названии. Поиск по всему описанию даёт
     # мусор вроде «Стажёр по работе с клиентами», где слово «аналитика»
@@ -107,19 +120,34 @@ def is_relevant(vacancy: Vacancy, search_cfg: dict) -> tuple[bool, int, str]:
     if not role:
         return False, 0, "не найдена целевая роль в названии"
 
-    level_in_title = _matches(title, level_keywords)
-    level_in_body = level_in_title or _matches(body, level_keywords)
+    # Стажировка и junior — разные вещи: при занятости 20–30 ч/нед джуниор
+    # на полный день чаще всего не подходит, поэтому веса разведены.
+    intern_keywords = search_cfg.get("internship_keywords", [])
+    junior_keywords = search_cfg.get("junior_keywords", [])
 
+    intern_in_title = _matches(title, intern_keywords)
+    intern_in_body = intern_in_title or _matches(body, intern_keywords)
+    junior_in_title = _matches(title, junior_keywords)
+    junior_in_body = junior_in_title or _matches(body, junior_keywords)
+
+    level_in_body = intern_in_body or junior_in_body
     if not level_in_body and not vacancy.level_prefiltered:
         return False, 0, "нет признаков стажировки/junior"
 
     score = role_weight
-    if level_in_title:
-        score += 4
-    elif level_in_body:
-        score += 2
+    if intern_in_title:
+        score += int(search_cfg.get("internship_weight", 8))
+    elif intern_in_body:
+        score += int(search_cfg.get("internship_weight", 8)) // 2
+    elif junior_in_title:
+        score += int(search_cfg.get("junior_weight", 3))
+    elif junior_in_body:
+        score += 1
     else:
         score += 1  # уровень гарантирован только фильтром источника
+
+    # Площадка могла подтвердить тип занятости фильтром, минуя текст.
+    score += vacancy.source_bonus
 
     # Совпадения со стеком из резюме поднимают вакансию, чужой стек — опускает.
     # Потолок не даёт длинному описанию перевесить роль и уровень.
