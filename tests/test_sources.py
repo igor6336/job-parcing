@@ -95,3 +95,45 @@ def test_linkedin_moscow_agglomeration_passes_city_filter():
     vacancy = make_source(LinkedInSource)._parse(LINKEDIN_HTML)[0]
     _, _, reason = is_relevant(vacancy, SEARCH)
     assert "регион" not in reason
+
+
+HH_RSS_PLAIN = """<?xml version='1.0' encoding='utf-8'?>
+<rss version="2.0"><channel><title>HeadHunter Vacancy</title>
+<item>
+  <pubDate>2026-09-24T10:00:00.000+03:00</pubDate>
+  <title>Бизнес-аналитик</title>
+  <link>https://hh.ru/vacancy/111</link>
+  <description><![CDATA[<p>Вакансия компании: Рога</p> <p>Регион: Москва</p> <p>Предполагаемый уровень месячного дохода: не указан</p>]]></description>
+</item>
+</channel></rss>"""
+
+
+def test_only_confirming_profile_waives_level_check():
+    """Бонус за режим и отмена проверки уровня — разные вещи.
+
+    schedule=partTime выдачу не фильтрует, поэтому обычная вакансия на полный
+    день не должна считаться подтверждённой стажировкой только из-за режима.
+    """
+    from jobparser.filters import is_relevant
+
+    source = make_source(HHSource)
+
+    confirming = source._parse_feed(HH_RSS_PLAIN)[0]
+    confirming.source_bonus = 9
+    confirming.level_prefiltered = True          # employment=probation
+    assert is_relevant(confirming, SEARCH)[0]
+
+    non_confirming = source._parse_feed(HH_RSS_PLAIN)[0]
+    non_confirming.source_bonus = 3
+    non_confirming.level_prefiltered = False     # schedule=flexible
+    ok, _, reason = is_relevant(non_confirming, SEARCH)
+    assert not ok and "стажировки/junior" in reason
+
+
+def test_config_has_no_part_time_profile():
+    # partTime возвращает обычную выдачу — держать его в профилях нельзя.
+    profiles = Config.load().source("hh").get("query_profiles", [])
+    schedules = [p.get("params", {}).get("schedule") for p in profiles]
+    assert "partTime" not in schedules
+    # А тот режим, что подтверждает уровень, должен быть ровно один.
+    assert sum(1 for p in profiles if p.get("confirms_level")) == 1

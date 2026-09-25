@@ -65,6 +65,9 @@ class HHSource(BaseSource):
             extra = profile.get("params") or {}
             bonus = int(profile.get("bonus", 0))
             note = profile.get("note", "")
+            # Только режимы, которые действительно отбирают нужный тип
+            # занятости, освобождают вакансию от проверки уровня по тексту.
+            confirms_level = bool(profile.get("confirms_level", False))
 
             for query in self.cfg.get("queries", []):
                 for page in range(max_pages):
@@ -95,7 +98,7 @@ class HHSource(BaseSource):
                         new_on_page += 1
                         vacancy.source_bonus = bonus
                         vacancy.source_note = note
-                        if bonus > 0:
+                        if confirms_level:
                             # Режим уже гарантирует нужный тип занятости,
                             # поэтому слово «стажёр» в тексте не обязательно.
                             vacancy.level_prefiltered = True
